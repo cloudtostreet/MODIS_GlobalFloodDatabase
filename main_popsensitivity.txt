@@ -1,0 +1,314 @@
+// Imports
+var gfd = ee.ImageCollection("projects/global-flood-db/gfd_v3"),
+    ghsl_pop = ee.ImageCollection("JRC/GHSL/P2016/POP_GPW_GLOBE_V1"),
+    ghsl_settle = ee.ImageCollection("JRC/GHSL/P2016/SMOD_POP_GLOBE_V1"),
+    hrsl = ee.ImageCollection("projects/sat-io/open-datasets/hrslpop"),
+    jrc = ee.Image("JRC/GSW1_1/GlobalSurfaceWater"),
+    mod44w = ee.Image("MODIS/MOD44W/MOD44W_005_2000_02_24");
+
+// STEP 0 - Check out population data and read in GripPop3
+
+// GHSL
+print("GHSL:", ghsl_pop)
+var ghsl_2015 = ee.Image(ghsl_pop.filterMetadata('system:index','equals','2015').first())
+var ghsl_2015_masked = ghsl_2015.selfMask()
+
+// HRSL
+// List of HRSL images to remove (duplicates)
+var rm_list =['population_AF01_2018-10-01',
+              'population_AF02_2018-10-01',
+              'population_AF03_2018-10-01',
+              'population_AF04_2018-10-01',
+              'population_AF05_2018-10-01',
+              'population_AF06_2018-10-01',
+              'population_AF07_2018-10-01',
+              'population_AF08_2018-10-01',
+              'population_AF09_2018-10-01',
+              'population_AF10_2018-10-01',
+              'population_AF11_2018-10-01',
+              'population_AF12_2018-10-01',
+              'population_AF13_2018-10-01',
+              'population_AF14_2018-10-01',
+              'population_AF15_2018-10-01',
+              'population_AF16_2018-10-01',
+              'population_AF17_2018-10-01',
+              'population_AF18_2018-10-01',
+              'population_AF19_2018-10-01',
+              'population_AF20_2018-10-01',
+              'population_AF21_2018-10-01',
+              'population_AF22_2018-10-01',
+              'population_AF23_2018-10-01',
+              'population_AF24_2018-10-01',
+              'population_AF25_2018-10-01',
+              'population_AF26_2018-10-01',
+              'population_AF27_2018-10-01',
+              'population_AF28_2018-10-01', // africa continent images
+              'population_AS42_2018-10-01',
+              'population_AS43_2018-10-01',
+              'population_AS44_2018-10-01',
+              'population_AS47_2018-10-01', // south asia images
+              'population_ago_2018-10-01', // earlier version of angola data
+              'population_bdi_2018-10-01', // earlier version of burundi data
+              'population_ben_2018-10-01', // earlier version of benin data
+              'population_bwa_2018-10-01', // earlier version of botswana data
+              'population_civ_2018-10-01', // earlier version of cote d'ivoire data
+              'population_cmr_2018-10-01', // earlier version of cameroon data
+              'population_cpv_2018-10-01', // earlier version of cape verde
+              'population_dji_2018-10-01', // earlier version of djibouti
+              'population_eri_2018-10-01', // earlier version of eritrea
+              'population_gha_2018-10-01', // earlier version of ghana
+              'population_gmb_2018-10-01', // earlier version of gambia
+              'population_lso_2018-10-01', // earlier version of lesotho
+              'population_moz_2018-10-01', // earlier version of mozambique
+              'population_myt_2018-10-01', // earlier version of mayotte
+              'population_nam_2018-10-01', // earlier version of nambia
+              'population_sle_2018-10-01', // earlier version of sierra Leone
+              'population_stp_2018-10-01', // earlier version of sao tome
+              'population_swz_2018-10-01', // earlier version of swaziland
+              'population_tgo_2018-10-01', // earlier version of togo
+              'population_uga_2018-10-01', // earlier version of uganda
+              'population_zaf_2018-10-01', // earlier version of south africa
+              'population_zmb_2018-10-01', // earlier version of zambia
+              'population_zwe_2018-10-01'] // earlier version of zimbabwe
+
+// Filter to remove items in list
+var hrsl_filter = ee.Filter.listContains({leftValue:rm_list,
+                                          rightField:'id_no'}).not()
+var hrsl_filtered = hrsl.filter(hrsl_filter)
+var hrsl_img = hrsl_filtered.mosaic()
+print("HRSL:",hrsl_filtered)
+print("HRSL Scale", ee.Image(hrsl.first()).projection().nominalScale())
+
+// GridPop3
+// Add Gridpop data from other countries
+var gpop3_sle = ee.Image("projects/global-flood-db/GRIDpop3_SLE")
+var gpop3_ssd = ee.Image("projects/global-flood-db/GRID3pop_SSD")
+var gpop3_cod = ee.Image("projects/global-flood-db/gridpop3_COD")
+var gpop3_gha = ee.Image("projects/c2s-ee-cloud/assets/GRIDpop3_GHA")
+var gpop3_moz = ee.Image("projects/global-flood-db/GRID3pop_MOZ")
+var gpop3_nga = ee.Image("projects/global-flood-db/GRID3pop_NGA")
+var gpop3_zmb = ee.Image("projects/global-flood-db/GRID3pop_ZMB")
+
+var gridpop3 = ee.ImageCollection([gpop3_sle,
+                                   gpop3_ssd,
+                                   gpop3_cod,
+                                   gpop3_gha,
+                                   gpop3_moz,
+                                   gpop3_nga,
+                                   gpop3_zmb])
+var gridpop3_img = gridpop3.mosaic()
+print("Grid Pop3:", gridpop3)
+print("Grid Pop Scale", ee.Image(gridpop3.first()).projection().nominalScale())
+
+// STEP 1 - Prep permanent water layers & masks
+var gfd_first = ee.Image(gfd.first())
+var scale_gfd = gfd_first.projection().nominalScale()
+var crs_gfd = gfd_first.projection().crs()
+print("GFD CRS:", crs_gfd)
+print("GFD Scale:",scale_gfd)
+
+// JRC Mask
+var jrc_250m = jrc.select('transition')
+                  .eq(1)
+                  .unmask()
+                  .reproject({crs:crs_gfd, scale:scale_gfd})
+var jrc_250m_mask = jrc_250m.neq(1)
+
+// MOD44W Mask
+var mod44w_mask = ee.Image(mod44w.select('water_mask')).eq(0)
+Map.addLayer(jrc_250m_mask, {}, 'JRC', false)
+Map.addLayer(mod44w_mask, {}, 'MOD44W', false)
+
+// STEP 2 - Clean up GFD
+function maskPermWater(img){
+  var all_water = img.select("flooded")
+  var water_mask = jrc_250m_mask
+  return img.updateMask(water_mask)
+}
+
+function filterIsoPix (img){
+
+  // Calculate the number of connected pixels
+  var size = img.select("flooded")
+                .selfMask()
+                .int()
+                .connectedPixelCount(2, false)
+
+  return size.updateMask(size.gte(2))
+    .multiply(0)
+    .add(1)
+    .reproject('EPSG:4326', null, img.projection().nominalScale())}
+
+var gfd_flood = gfd.map(maskPermWater)
+var gfd_cleaned = gfd_flood.map(filterIsoPix)
+
+// STEP 3 - Sum entire GFD collection images
+var gfd_dirty_sum = gfd_flood.select('flooded').sum().selfMask()
+var gfd_cleaned_sum = gfd_cleaned.select('flooded').sum().selfMask()
+
+var flood_palette = ['#fff7fb','#ece7f2','#d0d1e6','#a6bddb','#74a9cf',
+                     '#3690c0','#0570b0','#045a8d','#023858']
+Map.addLayer(gfd_dirty_sum, {min:1,max:9,palette:flood_palette}, 'GFD Dirty')
+Map.addLayer(gfd_cleaned_sum, {min:1,max:9,palette:flood_palette}, 'GFD Clean')
+
+// STEP 4 - Summarize populatoin change in flood plains for countries & watersheds
+var countries = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017')
+
+// Prep GHSL Settlement Layer
+var ghsl_settle_2015 = ee.Image(ghsl_settle.filterMetadata('system:index','equals','2015').first())
+var rural = ghsl_settle_2015.select('smod_code').lte(1)
+var semiurban = ghsl_settle_2015.select('smod_code').eq(2)
+var urban = ghsl_settle_2015.select('smod_code').eq(3)
+
+// Flood exposure estimates by different datasets & land-use zones
+function hotspotByPoly(ft){
+  var gfd_ft = gfd_cleaned_sum.clip(ft.bounds())
+  var map_scale = gfd_ft.projection().nominalScale()
+
+  // GHSL
+  var ghsl_2015_ft = ghsl_2015_masked.clip(ft.bounds())
+  var ghsl_scale = ghsl_2015_ft.projection().nominalScale()
+
+  // HRSL
+  var hrsl_ft = hrsl_img.clip(ft.bounds())
+  var hrsl_scale = ee.Image(hrsl.first()).projection().nominalScale()
+
+  // GridPop3
+  var gridpop3_ft = gridpop3_img.clip(ft.bounds())
+  var gridpop3_scale = ee.Image(gridpop3.first()).projection().nominalScale()
+
+  // Mask population datasets by GFD
+  var ghsl_2015_flood_img = ghsl_2015_ft.updateMask(gfd_ft.gte(1))
+  var hrsl_flood_img = hrsl.mosaic().updateMask(gfd_ft.gte(1))
+  var gridpop3_flood_img = gridpop3_ft.updateMask(gfd_ft.gte(1))
+
+  // Calculate flood exposed populations using different datsets
+  // Rural zone
+  var pop_ghsl2015_flood_rural = ghsl_2015_flood_img.updateMask(rural).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: ghsl_scale,
+    maxPixels: 1e11,
+    tileScale:16
+  })
+
+  var pop_hrsl_flood_rural = hrsl_flood_img.updateMask(rural).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: hrsl_scale,
+    maxPixels: 1e11,
+    tileScale:16
+  })
+
+  var gridpop3_flood_rural = gridpop3_flood_img.updateMask(rural).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: gridpop3_scale,
+    maxPixels: 1e11,
+    tileScale:16
+  })
+
+  // Semiurban zone
+  var pop_ghsl2015_flood_semiurban = ghsl_2015_flood_img.updateMask(semiurban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: ghsl_scale,
+    maxPixels: 1e11,
+    tileScale:16
+  })
+
+  var pop_hrsl_flood_semiurban = hrsl_flood_img.updateMask(semiurban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: hrsl_scale,
+    maxPixels: 1e11,
+    tileScale:16
+  })
+
+  var gridpop3_flood_semiurban = gridpop3_flood_img.updateMask(semiurban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: gridpop3_scale,
+    maxPixels: 1e11,
+    tileScale:16
+  })
+
+  // Urban zone
+  var pop_ghsl2015_flood_urban = ghsl_2015_flood_img.updateMask(urban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: ghsl_scale,
+    maxPixels: 1e11,
+    tileScale:16
+  })
+
+  var pop_hrsl_flood_urban = hrsl_flood_img.updateMask(urban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: hrsl_scale,
+    maxPixels: 1e11,
+    tileScale:16
+  })
+
+  var gridpop3_flood_urban = gridpop3_flood_img.updateMask(urban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: gridpop3_scale,
+    maxPixels: 1e11,
+    tileScale:16
+  })
+
+  // 1=rural; 2=semiurban; 3=urban
+  return ee.Feature(null, {"id":ft.get('id'),
+                           "country_abbrev":ft.get('abbreviati'),
+                           "countrycode":ft.get('country_co'),
+                           "country_name":ft.get('country_na'),
+                           "world_region":ft.get("wld_rgn"),
+
+                           // Flood exposed populations (rural)
+                           "floodpop_ghsl_1":pop_ghsl2015_flood_rural.getNumber('population_count'),
+                           "floodpop_hrsl_1":pop_hrsl_flood_rural.getNumber('b1'),
+                           "floodpop_gridpop3_1":gridpop3_flood_rural.getNumber('b1'),
+
+                           // Flood exposed populations (semiubran)
+                          "floodpop_ghsl_2":pop_ghsl2015_flood_semiurban.getNumber('population_count'),
+                          "floodpop_hrsl_2":pop_hrsl_flood_semiurban.getNumber('b1'),
+                          "floodpop_gridpop3_2":gridpop3_flood_semiurban.getNumber('b1'),
+
+                          // Flood exposed populations (urban)
+                          "floodpop_ghsl_3":pop_ghsl2015_flood_urban.getNumber('population_count'),
+                          "floodpop_hrsl_3":pop_hrsl_flood_urban.getNumber('b1'),
+                          "floodpop_gridpop3_3":gridpop3_flood_urban.getNumber('b1')
+  })
+}
+
+// Calculate flood exposures for each region
+// Create list of world regions
+var wld_rgn = countries.aggregate_array('wld_rgn').distinct()
+
+// Loop over world region list and prep export
+var i
+for (i = 0; i < 17; i++) {
+
+  // Get region
+  var region = wld_rgn.get(i)
+  var region_str = ee.String(region)
+    .toLowerCase()
+    .replace(' ', '')
+    .getInfo()
+
+// Filter by region & run pop summary
+  var region_countries = countries.filterMetadata('wld_rgn','equals',region)
+  var region_flood_exposure = region_countries.map(hotspotByPoly)
+
+  var base =  "sensitivity_analysis"
+  var desc = base + '_' + region_str
+  var file_name = base + '_' + region_str + '_' + '20210105'
+
+  Export.table.toDrive({
+    collection:region_flood_exposure,
+    description: desc,
+    fileNamePrefix: file_name,
+    fileFormat: "CSV"
+  })
+}

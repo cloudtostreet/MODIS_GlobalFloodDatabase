@@ -1,0 +1,151 @@
+// Load important datasets
+var gfd = ee.ImageCollection("projects/global-flood-db/gfd_v3"),
+    ghsl = ee.ImageCollection("JRC/GHSL/P2016/POP_GPW_GLOBE_V1"),
+    landscan = ee.ImageCollection("projects/global-flood-db/landscan"),
+    jrc = ee.Image("JRC/GSW1_2/GlobalSurfaceWater"),
+    mod44w = ee.Image("MODIS/MOD44W/MOD44W_005_2000_02_24"),
+
+// Create polygons for areas of interest
+    new_orleans =
+    /* color: #d63000 */
+    /* shown: false */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[-91.67984539909732, 30.812343730092298],
+          [-91.67984539909732, 28.598700363414835],
+          [-88.60367352409732, 28.598700363414835],
+          [-88.60367352409732, 30.812343730092298]]], null, false),
+    brazil =
+    /* color: #98ff00 */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[-61.414139451742386, 1.3949828843040144],
+          [-61.414139451742386, -6.370036011014096],
+          [-49.197342576742386, -6.370036011014096],
+          [-49.197342576742386, 1.3949828843040144]]], null, false),
+    dhaka =
+    /* color: #0b4a8b */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[88.35934418124666, 24.769040797318755],
+          [88.35934418124666, 22.199878123949954],
+          [92.66598480624666, 22.199878123949954],
+          [92.66598480624666, 24.769040797318755]]], null, false),
+    india =
+    /* color: #ffc82d */
+    /* locked: true */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[91.13983358359377, 26.49880559147334],
+          [91.13983358359377, 25.57089816628388],
+          [92.36206258750002, 25.57089816628388],
+          [92.36206258750002, 26.49880559147334]]], null, false);
+
+// STEP 1 - Prep permanent water layers & masks
+var gfd_first = ee.Image(gfd.first())
+var scale_gfd = gfd_first.projection().nominalScale()
+var crs_gfd = gfd_first.projection().crs()
+
+// JRC Mask
+var jrc_250m = jrc.select('transition').eq(1).unmask()
+                  .reproject({crs:crs_gfd,
+                              scale:scale_gfd})
+var jrc_250m_mask = jrc_250m.neq(1)
+
+// MOD44W Mask
+var mod44w_mask = ee.Image(mod44w.select('water_mask')).eq(0)
+Map.addLayer(jrc_250m_mask, {}, 'JRC', false)
+Map.addLayer(mod44w_mask, {}, 'MOD44W', false)
+
+// STEP 2 - Clean up GFD
+function maskPermWater(img){
+  var all_water = img.select("flooded")
+  var water_mask = jrc_250m_mask
+  return img.updateMask(water_mask)
+}
+
+function filterIsoPix (img){
+
+  // Calculate the number of connected pixels
+  var size = img.select("flooded")
+                .selfMask()
+                .int()
+                .connectedPixelCount(2, false)
+
+return size.updateMask(size.gte(2))
+  .multiply(0)
+  .add(1)
+  .reproject('EPSG:4326', null, img.projection().nominalScale())}
+
+var gfd_flood = gfd.map(maskPermWater)
+var gfd_cleaned = gfd_flood.map(filterIsoPix)
+
+// STEP 3 - Sum entire GFD collection images
+var gfd_dirty_sum = gfd_flood.select('flooded').sum().selfMask()
+var gfd_cleaned_sum = gfd_cleaned.select('flooded').sum().selfMask()
+
+var flood_palette = ['#fff7fb','#ece7f2','#d0d1e6','#a6bddb','#74a9cf',
+                     '#3690c0','#0570b0','#045a8d','#023858']
+Map.addLayer(gfd_dirty_sum, {min:1,max:9,palette:flood_palette}, 'GFD Dirty')
+Map.addLayer(gfd_cleaned_sum, {min:1,max:9,palette:flood_palette}, 'GFD Clean')
+
+// STEP 4 - Calculate population change from 2000 to 2015 using GHSL
+var ghsl_2000 = ee.Image(ghsl.filterMetadata('system:index','equals','2000').first())
+var ghsl_2015 = ee.Image(ghsl.filterMetadata('system:index','equals','2015').first())
+var ghsl_pop_diff = ghsl_2015.subtract(ghsl_2000)
+
+// Reproject GHSL dataset & mask
+var ghsl_2000_reproj = ghsl_2000.resample('bilinear').reproject(crs_gfd, null, scale_gfd)
+var ghsl_pdiff_reproj = ghsl_pop_diff.resample('bilinear').reproject(crs_gfd, null, scale_gfd)
+
+var ghsl_pdiff_mask = ghsl_pdiff_reproj.neq(0)
+var ghsl_pdiff_masked = ghsl_pdiff_reproj.updateMask(ghsl_pdiff_mask)
+
+var ghsl_2000_masked = ghsl_2000_reproj.selfMask()
+
+var pop_palette = ['#053061','#2166ac','#4393c3','#92c5de','#d1e5f0',
+                   '#f7f7f7','#fddbc7','#f4a582','#d6604d','#b2182b','#67001f']
+Map.addLayer(ghsl_2000, {min:-100,max:100,palette:pop_palette}, 'GHSL Pop 2000 - ESPG 54009', false)
+Map.addLayer(ghsl_2000_reproj, {min:-100,max:100,palette:pop_palette}, 'GHSL Pop 2000 - ESPG 4326', false)
+Map.addLayer(ghsl_2000_masked, {min:-100,max:100,palette:pop_palette}, 'GHSL Pop 2000 Masked  - ESPG 4326', false)
+Map.addLayer(ghsl_pop_diff, {min:-100,max:100,palette:pop_palette}, 'GHSL Pop Change - EPSG:54009', false)
+Map.addLayer(ghsl_pdiff_reproj, {min:-100,max:100,palette:pop_palette}, 'GHSL Pop Change - ESPG 4326', false)
+Map.addLayer(ghsl_pdiff_masked, {min:-100,max:100,palette:pop_palette}, 'GHSL Pop Change Masked - ESPG 4326', false)
+
+// STEP 5 - Create Raster of pop change in flood plain areas
+var gfd_dirty_floodplain = gfd_dirty_sum.gte(1)
+var gfd_dirty_popchange = gfd_dirty_floodplain.multiply(ghsl_pdiff_reproj)
+
+var gfd_clean_floodplain = gfd_cleaned_sum.gte(1)
+var gfd_clean_popchange = gfd_clean_floodplain.multiply(ghsl_pdiff_reproj)
+
+Map.addLayer(gfd_dirty_popchange, {min:-100,max:100,palette:pop_palette}, 'GFD Dirty Pop Change')
+Map.addLayer(gfd_clean_popchange.selfMask(), {min:-100,max:100,palette:pop_palette}, 'GFD Clean Pop Change')
+
+Export.image.toDrive({
+  image: gfd_clean_popchange,
+  description:'hotspot_jrc_brazil',
+  folder: 'hotspot',
+  fileNamePrefix: 'hotspot_jrc_brazil',
+  region: brazil,
+  scale:250,
+  crs: "EPSG:4326",
+  maxPixels:1e10,
+  fileFormat: 'GEOTIFF'
+})

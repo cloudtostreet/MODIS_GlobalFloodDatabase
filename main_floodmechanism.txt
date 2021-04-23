@@ -1,0 +1,302 @@
+// Imports
+var gfd = ee.ImageCollection("projects/global-flood-db/gfd_v3"),
+    ghsl_pop = ee.ImageCollection("JRC/GHSL/P2016/POP_GPW_GLOBE_V1"),
+    ghsl_settle = ee.ImageCollection("JRC/GHSL/P2016/SMOD_POP_GLOBE_V1"),
+    jrc = ee.Image("JRC/GSW1_1/GlobalSurfaceWater"),
+    mod44w = ee.Image("MODIS/MOD44W/MOD44W_005_2000_02_24")
+    cause_table = ee.FeatureCollection("projects/global-flood-db/NEWsupplementarytable6_cd2");
+
+
+// Table to add DFO event cause (ie. heacy rain, dam break, etc.)
+// Select which types of floods to aggregate (Dam; Heavy rain; Snowmelt, Ice, Rain; Tropical Storm, Surge)
+var cause_filter = "Tropical Storm, Surge"
+
+// STEP 1 - Prep permanent water layers & masks
+var gfd_first = ee.Image(gfd.first())
+var scale_gfd = gfd_first.projection().nominalScale()
+var crs_gfd = gfd_first.projection().crs()
+
+// JRC Mask
+var jrc_250m = jrc.select('transition').eq(1).unmask()
+                  .reproject({crs:crs_gfd,
+                              scale:scale_gfd})
+var jrc_250m_mask = jrc_250m.neq(1)
+
+// MOD44W Mask
+var mod44w_mask = ee.Image(mod44w.select('water_mask')).eq(0)
+Map.addLayer(jrc_250m_mask, {}, 'JRC', false)
+Map.addLayer(mod44w_mask, {}, 'MOD44W', false)
+
+// STEP 2 - Clean up GFD
+function maskPermWater(img){
+  var all_water = img.select("flooded")
+  var water_mask = jrc_250m_mask
+  return img.updateMask(water_mask)
+}
+
+function filterIsoPix (img){
+
+  // Calculate the number of connected pixels
+  var size = img.select("flooded")
+                .selfMask()
+                .int()
+                .connectedPixelCount(2, false)
+
+return size.updateMask(size.gte(2))
+  .multiply(0)
+  .add(1)
+  .reproject('EPSG:4326', null, img.projection().nominalScale()).copyProperties(img)}
+
+
+function add_cause(img){
+  var dfo_id = img.get("id");
+  var event_feature = cause_table.filterMetadata("dfo_event_id", "equals", dfo_id).first();
+  var dfo_cause = event_feature.get("dfo_cause");
+  return img.set({"dfo_cause": dfo_cause})
+}
+
+var gfd_flood = gfd.map(maskPermWater)
+gfd_flood = gfd_flood.map(add_cause)
+var gfd_cleaned = gfd_flood.map(filterIsoPix)
+gfd_cleaned = gfd_cleaned.filterMetadata("dfo_cause", "equals", cause_filter);
+print("gfd_cleaned", gfd_cleaned)
+
+// STEP 3 - Sum entire GFD collection images
+var gfd_dirty_sum = gfd_flood.select('flooded').sum().selfMask()
+var gfd_cleaned_sum = gfd_cleaned.select('flooded').sum().selfMask()
+
+var flood_palette = ['#fff7fb','#ece7f2','#d0d1e6','#a6bddb','#74a9cf',
+                     '#3690c0','#0570b0','#045a8d','#023858']
+Map.addLayer(gfd_dirty_sum, {min:1,max:9,palette:flood_palette}, 'GFD Dirty')
+Map.addLayer(gfd_cleaned_sum, {min:1,max:9,palette:flood_palette}, 'GFD Clean')
+
+// STEP 4 - Calculate population change from 2000 to 2015 using GHSL
+var ghsl_2000 = ee.Image(ghsl_pop.filterMetadata('system:index','equals','2000').first())
+var ghsl_2015 = ee.Image(ghsl_pop.filterMetadata('system:index','equals','2015').first())
+var ghsl_pop_diff = ghsl_2015.subtract(ghsl_2000)
+
+// Reproject GHSL dataset & mask
+var ghsl_2000_reproj = ghsl_2000.resample('bilinear').reproject(crs_gfd, null, scale_gfd)
+var ghsl_pdiff_reproj = ghsl_pop_diff.resample('bilinear').reproject(crs_gfd, null, scale_gfd)
+
+var ghsl_pdiff_mask = ghsl_pdiff_reproj.neq(0)
+var ghsl_pdiff_masked = ghsl_pdiff_reproj.updateMask(ghsl_pdiff_mask)
+
+var ghsl_2000_masked = ghsl_2000_reproj.selfMask()
+
+var pop_palette = ['#053061','#2166ac','#4393c3','#92c5de','#d1e5f0',
+                   '#f7f7f7','#fddbc7','#f4a582','#d6604d','#b2182b','#67001f']
+Map.addLayer(ghsl_2000, {min:-100,max:100,palette:pop_palette}, 'GHSL Pop 2000 - ESPG 54009', false)
+Map.addLayer(ghsl_2000_reproj, {min:-100,max:100,palette:pop_palette}, 'GHSL Pop 2000 - ESPG 4326', false)
+Map.addLayer(ghsl_2000_masked, {min:-100,max:100,palette:pop_palette}, 'GHSL Pop 2000 Masked  - ESPG 4326', false)
+Map.addLayer(ghsl_pop_diff, {min:-100,max:100,palette:pop_palette}, 'GHSL Pop Change - EPSG:54009', false)
+Map.addLayer(ghsl_pdiff_reproj, {min:-100,max:100,palette:pop_palette}, 'GHSL Pop Change - ESPG 4326', false)
+Map.addLayer(ghsl_pdiff_masked, {min:-100,max:100,palette:pop_palette}, 'GHSL Pop Change Masked - ESPG 4326', false)
+
+// STEP 5 - Create Raster of pop change in flood plain areas
+var gfd_dirty_floodplain = gfd_dirty_sum.gte(1)
+var gfd_dirty_popchange = gfd_dirty_floodplain.multiply(ghsl_pdiff_reproj)
+
+var gfd_clean_floodplain = gfd_cleaned_sum.gte(1)
+var gfd_clean_popchange = gfd_clean_floodplain.multiply(ghsl_pdiff_reproj)
+var lossmask= (gfd_clean_popchange.lte(1).multiply(gfd_clean_popchange).neq(0))
+Map.addLayer(gfd_dirty_popchange, {min:-100,max:100,palette:pop_palette}, 'GFD Dirty Pop Change')
+Map.addLayer(gfd_clean_popchange, {min:-100,max:100,palette:pop_palette}, 'GFD Clean Pop Change')
+Map.addLayer(gfd_clean_popchange.lte(1).multiply(gfd_clean_popchange).updateMask(lossmask), {min:-400,max:0,palette:pop_palette}, 'GFD Dirty Pop Loss')
+
+// Export.image.toDrive({
+//   image: gfd_clean_popchange,
+//   description:'hotspot_jrc_20190802',
+//   folder: 'hotspot',
+//   fileNamePrefix: 'hotspot_jrc_20190802',
+//   scale: scale_gfd,
+//   crs: crs_gfd,
+//   fileFormat: 'GEOTIFF'
+// })
+
+// STEP 6 - Summarize populatoin change in flood plains for countries & watersheds
+// var countries = ee.FeatureCollection('ft:1tdSwUL7MVpOauSgRzqVTOwdfy17KDbw-1d9omPw')
+var countries = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017")
+var basins_l4 = ee.FeatureCollection('ft:1JRW4YKfVTZKLAH4x4JRsggsHZoXRRUQKTIOYgJOW')
+var basins_l5 = ee.FeatureCollection('ft:1IHRHUiWkgPXOzwNweeM89CzPYSfokjLlz7_0OTQl')
+print(countries)
+
+// STEP 7 - Prep GHSL Settlement Layer
+var ghsl_settle_2015 = ee.Image(ghsl_settle.filterMetadata('system:index','equals','2015').first())
+var rural = ghsl_settle_2015.select('smod_code').lte(1)
+var semiurban = ghsl_settle_2015.select('smod_code').eq(2)
+var urban = ghsl_settle_2015.select('smod_code').eq(3)
+
+
+// STEP 8
+function hotspotByPoly(ft){
+  var gfd_ft = gfd_cleaned_sum.clip(ft.bounds())
+  var map_scale = gfd_ft.projection().nominalScale()
+
+  var pop_2000_ft = ghsl_2000_masked.clip(ft.bounds())
+  var pop_diff_ft = ghsl_pdiff_masked.clip(ft.bounds())
+  var pop_scale = pop_diff_ft.projection().nominalScale()
+
+  var pop_change_all_rural = pop_diff_ft.updateMask(rural).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: pop_scale,
+    maxPixels: 1e10})
+
+  var pop_change_all_semiurban = pop_diff_ft.updateMask(semiurban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: pop_scale,
+    maxPixels: 1e10})
+
+  var pop_change_all_urban = pop_diff_ft.updateMask(urban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: pop_scale,
+    maxPixels: 1e10})
+
+  var pop_diff_flood = pop_diff_ft.updateMask(gfd_ft.gte(1))
+  var pop_change_flood_rural = pop_diff_flood.updateMask(rural).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: pop_scale,
+    maxPixels: 1e10})
+
+  var pop_change_flood_semiurban = pop_diff_flood.updateMask(semiurban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: pop_scale,
+    maxPixels: 1e10})
+
+  var pop_change_flood_urban = pop_diff_flood.updateMask(urban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: pop_scale,
+    maxPixels: 1e10})
+
+  var pop_change_nonflood_rural = pop_change_all_rural.getNumber('population_count')
+                            .subtract(pop_change_flood_rural.getNumber('population_count'))
+
+  var pop_change_nonflood_semiurban = pop_change_all_semiurban.getNumber('population_count')
+                            .subtract(pop_change_flood_semiurban.getNumber('population_count'))
+
+  var pop_change_nonflood_urban = pop_change_all_urban.getNumber('population_count')
+                            .subtract(pop_change_flood_urban.getNumber('population_count'))
+
+  var pop_2000_all_rural = pop_2000_ft.updateMask(rural).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: pop_scale,
+    maxPixels: 1e10})
+
+  var pop_2000_all_semiurban = pop_2000_ft.updateMask(semiurban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: pop_scale,
+    maxPixels: 1e10})
+
+  var pop_2000_all_urban = pop_2000_ft.updateMask(urban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: pop_scale,
+    maxPixels: 1e10})
+
+  var pop_2000_flood_img = pop_2000_ft.updateMask(gfd_ft.gte(1))
+  var pop_2000_flood_rural = pop_2000_flood_img.updateMask(rural).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: pop_scale,
+    maxPixels: 1e10})
+
+  var pop_2000_flood_semiurban = pop_2000_flood_img.updateMask(semiurban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: pop_scale,
+    maxPixels: 1e10})
+
+  var pop_2000_flood_urban = pop_2000_flood_img.updateMask(urban).reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: ft.geometry(),
+    scale: pop_scale,
+    maxPixels: 1e10})
+
+  var pop_2000_nonflood_rural = pop_2000_all_rural.getNumber('population_count')
+                          .subtract(pop_2000_flood_rural.getNumber('population_count'))
+
+  var pop_2000_nonflood_semiurban = pop_2000_all_semiurban.getNumber('population_count')
+                          .subtract(pop_2000_flood_semiurban.getNumber('population_count'))
+
+  var pop_2000_nonflood_urban = pop_2000_all_urban.getNumber('population_count')
+                          .subtract(pop_2000_flood_urban.getNumber('population_count'))
+
+  var pdelta_flood = pop_change_flood_rural.getNumber('population_count')
+                    .add(pop_change_flood_semiurban.getNumber('population_count')
+                    .add(pop_change_flood_urban.getNumber('population_count')))
+  var p2000_flood = pop_2000_flood_rural.getNumber('population_count')
+                    .add(pop_2000_flood_semiurban.getNumber('population_count')
+                    .add(pop_2000_flood_urban.getNumber('population_count')))
+
+  var pdelta_all = pop_change_all_rural.getNumber('population_count')
+                    .add(pop_change_all_semiurban.getNumber('population_count')
+                    .add(pop_change_all_urban.getNumber('population_count')))
+  var p2000_all = pop_2000_all_rural.getNumber('population_count')
+                    .add(pop_2000_all_semiurban.getNumber('population_count')
+                    .add(pop_2000_all_urban.getNumber('population_count')))
+
+  var rate_numerator = pdelta_flood.divide(p2000_flood)
+  var rate_denominator = pdelta_all.divide(p2000_all)
+  var rate = rate_numerator.divide(rate_denominator)
+
+  // 1=rural; 2=semiurban; 3=urban
+  // a = all; f = flood; nf = nonflood
+  return ee.Feature(null, {// FPU Properties
+                          // "id":ft.get('id'),
+                          // "agric_val":ft.get('Agric_val'),
+                          // "assets_urb":ft.get('Assets_urb'),
+                          // "damage_urb":ft.get('Damage_urb'),
+                          // "gdp":ft.get('GDP'),
+                          // "fpu_pop":ft.get("Population"),
+
+                           // LSIB Properties
+                           'region':ft.get('wld_rgn'),
+                           'cc':ft.get('country_co'),
+                           'country':ft.get('country_na'),
+
+                           "pdelt_a_1":pop_change_all_rural.getNumber('population_count'),
+                           "pdelt_f_1": pop_change_flood_rural.getNumber('population_count'),
+                           "pdelt_nf_1":pop_change_nonflood_rural,
+                           "p2000_a_1":pop_2000_all_rural.getNumber('population_count'),
+                           "p2000_f_1":pop_2000_flood_rural.getNumber('population_count'),
+                           "p2000_nf_1":pop_2000_nonflood_rural,
+
+                           "pdelt_a_2":pop_change_all_semiurban.getNumber('population_count'),
+                           "pdelt_f_2": pop_change_flood_semiurban.getNumber('population_count'),
+                           "pdelt_nf_2":pop_change_nonflood_semiurban,
+                           "p2000_a_2":pop_2000_all_semiurban.getNumber('population_count'),
+                           "p2000_f_2":pop_2000_flood_semiurban.getNumber('population_count'),
+                           "p2000_nf_2":pop_2000_nonflood_semiurban,
+
+                           "pdelt_a_3":pop_change_all_urban.getNumber('population_count'),
+                           "pdelt_f_3": pop_change_flood_urban.getNumber('population_count'),
+                           "pdelt_nf_3":pop_change_nonflood_urban,
+                           "p2000_a_3":pop_2000_all_urban.getNumber('population_count'),
+                           "p2000_f_3":pop_2000_flood_urban.getNumber('population_count'),
+                           "p2000_nf_3":pop_2000_nonflood_urban,
+
+                           "pdelt_f": pdelta_flood,
+                           "p2000_f": p2000_flood,
+                           "pdelt": pdelta_all,
+                           "p2000": p2000_all,
+
+                           "fpop_rate": rate
+  })
+}
+
+var hotspot_countries = countries.map(hotspotByPoly)
+
+Export.table.toDrive({
+  collection:hotspot_countries,
+  description: "hotspot_countries_jrc_20210112_Surge",
+  fileNamePrefix: "hotspot_countries_jrc_20210112_Surge",
+  fileFormat: "CSV"
+})

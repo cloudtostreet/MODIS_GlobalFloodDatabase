@@ -1,0 +1,72 @@
+// Functions used to collect a mosaic of all Landsat images over a specified area
+// and within a certain number of days from the maximum flood extent image.
+exports.getLandsat = function(id, gfd, cloudCover, deltaDays){
+
+  // Prep the Landsat data by filtering flood dates
+  // LANDSAT 8 - Filter Landsat 8 OLI Products by Flood Events Boundaries and Dates
+  function filterFloodEventsL8 (roi, filterDate){
+    var imageCollection = ee.ImageCollection("LANDSAT/LC08/C01/T1_SR").filterBounds(roi)
+                          .filterDate(filterDate, filterDate.advance(deltaDays, "day"))
+                          .filterMetadata("CLOUD_COVER", "less_than", cloudCover)
+    return imageCollection
+  }
+
+  // LANDSAT 7 - Filter Landsat 7 ETM Products by Flood Events Boundaries and Dates
+  function filterFloodEventsL7 (roi, filterDate){
+    var imageCollection = ee.ImageCollection("LANDSAT/LE07/C01/T1_SR").filterBounds(roi)
+                        .filterDate(filterDate, filterDate.advance(deltaDays, "day"))
+                        .filterMetadata("CLOUD_COVER", "less_than", cloudCover)
+    return imageCollection
+  }
+
+  // LANDSAT 5 - Filter Landsat 5 TM Products by Flood Events Boundaries and Dates
+  function filterFloodEventsL5 (roi, filterDate){
+    var imageCollection = ee.ImageCollection("LANDSAT/LT05/C01/T1_SR").filterBounds(roi)
+                        .filterDate(filterDate, filterDate.advance(deltaDays, "day"))
+                        .filterMetadata("CLOUD_COVER", "less_than", cloudCover)
+    return imageCollection
+  }
+
+  // DFO Fusion Table and extract important variables
+  var dfoEvents = ee.FeatureCollection("projects/global-flood-db/dfo-polygons/dec-03-2019");
+  var dfoPoly = ee.Feature(dfoEvents.filterMetadata('ID','equals',id).first()).geometry()
+  var img = ee.Image(gfd.filterMetadata("Index", "equals", id).first()).select("flooded").clip(dfoPoly)
+  var ft = img.updateMask(img).reduceToVectors({scale: 1000, maxPixels: 10e13})
+                    .map(function(f){return f.simplify(10000)})
+
+  // Variables for filter landsat series of functions
+  var maxDate = ee.Date(img.get('maxImgDate'))
+
+  // Filter for Landsat 8 images
+  var l8 = filterFloodEventsL8(ft, maxDate).select(["B2", "B3", "B4", "B5", "B6", "B7", "pixel_qa"],
+                                                ["B1", "B2", "B3", "B4", "B5", "B7", "pixel_qa"]);
+  // print("Landsat 8 OLI Collection", l8);
+
+  // Filter for Landsat 7 Images
+  var l7 = filterFloodEventsL7(ft, maxDate).select(["B1", "B2", "B3", "B4", "B5", "B7", "pixel_qa"]);
+  //print("Landsat 7 ETM Collection", l7);
+
+  // Filter for Landsat 5 images
+  var l5 = filterFloodEventsL5(ft, maxDate).select(["B1", "B2", "B3", "B4", "B5", "B7", "pixel_qa"]);
+  //print("Landsat 5 TM Collection", l5);
+
+  // print("getLandsat() retrieved the following number of images:",
+  //       ee.String("Landsat 8: ").cat(ee.String(l8.size())),
+  //       ee.String("Landsat 7: ").cat(ee.String(l7.size())),
+  //       ee.String("Landsat 5: ").cat(ee.String(l5.size())));
+
+  return ee.ImageCollection(l8.merge(l7).merge(l5));
+};
+
+// Mask clouds based on FMask band where clouds = 4; cloud shadows = 2
+exports.maskClouds = function(imgColl) {
+  var output = imgColl.map(function(img){
+    var cloud_pixel_qa = img.select('pixel_qa').bitwiseAnd(32).eq(0)
+    var cloud_shadow_pixel_qa = img.select('pixel_qa').bitwiseAnd(8).eq(0)
+    var imageSansCloudandShadow = img.updateMask(cloud_pixel_qa.and(cloud_shadow_pixel_qa))
+    var clear = ee.Image.constant(1).updateMask(cloud_pixel_qa.and(cloud_shadow_pixel_qa)).rename(['clear'])
+    var obs = ee.Image.constant(1).rename(['observation'])
+    return ee.Image(imageSansCloudandShadow.addBands(clear).addBands(obs))
+  });
+  return output;
+};

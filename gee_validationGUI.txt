@@ -1,0 +1,401 @@
+/*The purpose of this script is to create an easy to use interface for an analyst to create and assess random points
+through aerial interpretation for determining the accuracy of flood maps. Run the script, and select the first point from
+the dropdown menu. It will zoom you in to a yellow point; the first point in the assessment. Use the available layers (RGB, CIR,
+NDVI, MNDWI) to determine if the point is dry or flooded. There are two feature collections in the "Geometry Imports" section; one for
+dry and one for flood. Select the point that corresponds to the state of the point (dry or flooded) and draw a point on the yellow
+dot. There is a layer called "GCP Layer Circle" that is a 50-meter buffer on each point. In order for the final assessment to work,
+each drawn point much fall within that circle to retain important ID and geographic information. Go through all of the points and
+draw a dry of flooded point. When you're done you can rerun the script and a confusion matrix and overall accuracy will be printed
+in the Console tab. If you are doing this with three people, uncomment lines 210-219 and export your table. Collect your table
+and the table of the others doing the assessment and use the random number to match up the points. If for example three people
+total are doing the assessment, make a new column that represents majority of the three values (i.e. 0, 0, 1 becomes 0).
+Upload this new table to EE using a fusion table and substitute it in line 244 */
+
+//---------------------------------------------------------------------------------
+// Load required scripts
+var landsatTools = require("users/jonathanasullivan/gee-dfo-research-award:utils/landsat_v3");
+var misc = require("users/jonathanasullivan/gee-dfo-research-award:utils/misc");
+
+// Empty feature collections for validation points to be stored
+var water = /* color: #10a8d6 */ee.FeatureCollection([]),
+    dry = /* color: #ff8246 */ee.FeatureCollection([]),
+    na = /* color: #000000 */ee.FeatureCollection([]);
+
+var app = {};
+
+// Create UI Panels //
+app.createPanels = function() {
+  /* Introduces the tool. */
+  app.intro = {
+    panel: ui.Panel([
+      ui.Label({
+        value: 'GFD Validation GUI',
+        style: {fontWeight: 'bold', fontSize: '24px', margin: '10px 5px'}
+      }),
+      ui.Label('This app allows you to select flood events from the Global'+
+                ' Flood Database and provides Landsat-8, 7, & 5 imagery to'+
+                ' assess accuracy across a stratified random sample')
+    ])
+  };
+
+  // Textbox for analyst to enter initials
+  app.analyst = {
+    initials: ui.Textbox(),
+    applyButton: ui.Button('Enter', app.setInitials)
+  };
+
+  app.analyst.panel = ui.Panel({
+    widgets: [
+      ui.Label('1) Enter initials', {fontWeight: 'bold'}),
+      ui.Label('Analyst initials', app.HELPER_TEXT_STYLE), app.analyst.initials,
+      ui.Panel([
+        app.analyst.applyButton
+        ], ui.Panel.Layout.flow('vertical'))
+      ],
+      style: app.SECTION_STYLE
+  });
+
+  /* Flood Filter - Returns DFO Flood */
+  app.floodFilter = {
+    dfoID: ui.Textbox('4-digit dfo id'),
+    applyButton: ui.Button('Get flood event', app.loadFlood),
+    loadingLabel: ui.Label({
+      value: 'Loading...',
+      style: {stretch: 'vertical', color: 'gray', shown: false}
+    }),
+  };
+
+  /* The panel for the flood widget. */
+  app.floodFilter.panel = ui.Panel({
+    widgets: [
+      ui.Label('2) Enter DFO Index', {fontWeight: 'bold'}),
+      ui.Label('DFO Index', app.HELPER_TEXT_STYLE), app.floodFilter.dfoID,
+      ui.Panel([
+        app.floodFilter.applyButton,
+        app.floodFilter.loadingLabel
+      ], ui.Panel.Layout.flow('horizontal'))
+    ],
+    style: app.SECTION_STYLE
+  });
+
+  /* Widget to pick points from sample */
+  app.pointPicker = {
+    select: ui.Select({
+      items: ['0','1','2','3','4','5','6','7','8','9',
+              '10','11','12','13','14','15','16','17','18','19',
+              '20','21','22','23','24','25','26','27','28','29',
+              '30','31','32','33','34','35','36','37','38','39',
+              '40','41','42','43','44','45','46','47','48','49',
+              '50','51','52','53','54','55','56','57','58','59',
+              '60','61','62','63','64','65','66','67','68','69',
+              '70','71','72','73','74','75','76','77','78','79',
+              '80','81','82','83','84','85','86','87','88','89',
+              '90','91','92','93','94','95','96','97','98','99',
+              '100','101','102','103','104','105','106','107','108','109',
+              '110','111','112','113','114','115','116','117','118','119',
+              '120','121','122','123','124','125','126','127','128','129',
+              '130','131','132','133','134','135','136','137','138','139',
+              '140','141','142','143','144','145','146','147','148','149',
+              '150','151','152','153','154','155','156','157','158','159',
+              '160','161','162','163','164','165','166','167','168','169',
+              '170','171','172','173','174','175','176','177','178','179',
+              '180','181','182','183','184','185','186','187','188','189',
+              '190','191','192','193','194','195','196','197','198','199',
+              '200','201','202','203','204','205','206','207','208','209',
+              '210','211','212','213','214','215','216','217','218','219',
+              '220','221','222','223','224','225','226','227','228','229',
+              '230','231','232','233','234','235','236','237','238','239',
+              '240','241','242','243','244','245','246','247','248','249'],
+      placeholder: 'Select a sample point',
+      onChange: app.zoomToPoint
+    })
+  }
+
+  app.pointPicker.panel = ui.Panel({
+    widgets:[
+      ui.Label('3) Select a sample point', {fontWeight: 'bold'}),
+      ui.Panel([app.pointPicker.select
+      ], ui.Panel.Layout.flow('vertical'))
+  ],
+    style: app.SECTION_STYLE
+  });
+
+  /* The export section. */
+  app.export = {
+    button: ui.Button({
+      label: 'Export Validation Points',
+      onClick: app.exportPoints}),
+    error: ui.Label({style: app.ERROR_TEXT_STYLE})
+  };
+
+  /* The panel for the export section with corresponding widgets. */
+  app.export.panel = ui.Panel({
+    widgets: [
+      ui.Label('4) Start an export', {fontWeight: 'bold'}),
+      app.export.button,
+      app.export.error
+    ],
+    style: app.SECTION_STYLE
+  });
+};
+
+
+/** Creates the app helper functions. */
+app.createHelpers = function() {
+
+  app.setInitials = function() {
+    print("Analyst initial recorded")
+  };
+
+  // function to collect images over flood area and create sample
+  app.loadFlood = function() {
+    Map.clear();
+
+    // Set Filter Variables
+    var dfoID = app.floodFilter.dfoID.getValue()
+    if (dfoID) dfoID = ee.Number.parse(dfoID)
+
+    // Add DFO Polygon to Map
+    var dfoEvents = ee.FeatureCollection("ft:1HBs5-y8tXhYMQd5rtdjCqejpJW2p0FLBEamM9vaW");
+    var ft = ee.Feature(dfoEvents.filterMetadata('ID','equals',dfoID).first()).geometry()
+
+    // Paint the edges with different colors, display.
+    var empty = ee.Image().byte();
+    var outline = empty.paint({
+      featureCollection: ft,
+      color: "#993404",
+      width: 2
+    });
+    Map.addLayer(outline, {}, 'dfo polygon')
+
+    // Select flood image and geometry
+    var gfdFloodImg = ee.Image(app.GFD.filterMetadata("Index", "equals", dfoID).first())
+    var dfoFeature = ee.Feature(app.DFO_DB.filterMetadata("ID", "equals", dfoID).first())
+
+    // Load the Landsat images for a given flood and mosaic them together
+    var landsat = landsatTools.getLandsat(dfoID, app.GFD, 20, 1)
+    var landsatMasked = landsatTools.maskClouds(landsat)
+    var validationImg = landsatMasked.mosaic()
+
+    //Create a NDVI and MNDWI layer from the mosaic
+    var ndvi = validationImg.normalizedDifference(['B4','B3']).select(['nd'],['NDVI'])
+    var mndwi = validationImg.normalizedDifference(['B2', 'B4']).select(['nd'],['MNDWI'])
+    var image = validationImg.addBands(ndvi).addBands(mndwi)
+
+    // Define region for sampling
+    var landsatGeo = landsat.union().geometry()
+    var geo = landsatGeo.intersection(ft)
+
+    // Create strata for sampling and sample sizes (0=dry; perm water =1; flood =2)
+    var waterImg = ee.Image(app.MOD44W.select('water_mask').first()).clip(gfdFloodImg.geometry())
+    var strata = gfdFloodImg.add(waterImg.multiply(10)).remap([0,1,10,11],[0,2,1,1]).select(['remapped'],['flooded'])
+    var mask = image.select('NDVI').mask()
+    var strataMasked = strata.updateMask(mask).clip(geo.bounds())
+
+    // Add stuff to the Map
+    var visOption = app.VIS_OPTIONS
+    Map.centerObject(geo, 6)
+    Map.addLayer(image, visOption.natural, 'natural', false)
+    Map.addLayer(image, visOption.nir, 'nir')
+    Map.addLayer(image, visOption.ndvi, 'ndvi', false)
+    Map.addLayer(image, visOption.mndwi, 'ndwi', false)
+    // Map.addLayer(mask, {min:0, max:1}, 'mask')
+    // Map.addLayer(strataMasked, {min:0,max:2,palette:['#fdb462','#023858','#a6bddb']}, 'strata')
+
+    /* Create stratified sample */
+    var sampleSize = 250
+    var strata01 = ee.Number(sampleSize*0.25).int()
+    var strata2 = ee.Number(sampleSize*0.50).int()
+    var gcps = (strataMasked.select('flooded').addBands(ee.Image.pixelLonLat())
+                            .stratifiedSample(sampleSize, 'flooded', geo, 250, null, 10, [0,1,2], [strata01,strata01,strata2], true)) // strata sample procedure
+                            .map(function(s) {
+                              var lat = s.get('latitude')
+                              var lon = s.get('longitude')
+                              var strata = s.get('flooded')
+                              return ee.Feature(ee.Geometry.Point([lon, lat]),
+                                                                  {'strata': strata,
+                                                                    id: s.id()});
+                            }).randomColumn().sort('id');
+    print('Sample Size',gcps.aggregate_histogram('strata'))
+
+    // Convert the GCPS to a bounding box that can be used to assess percentage water within each pixels.
+    // This region will also be used later to ensure points match up when multiple people are doing the
+    // same assessment
+    var scale = gfdFloodImg.projection().nominalScale()
+    function getBoundingBox (f){
+      var buff = f.geometry().buffer(scale.divide(2))
+      var box = buff.bounds()
+      return ee.Feature(box).copyProperties(f)
+    }
+    var boxes = gcps.map(getBoundingBox)
+
+    // Add Landsat data to the tarets
+    var targets = image.select('B1','B2','B3','B4','B5','B7','NDVI','MNDWI').reduceRegions({
+      collection: boxes,
+      reducer: ee.Reducer.mean(),
+      scale: 30
+      })
+
+    // Save important data to active dictionary
+    app.DATA.set('gcps', gcps)
+    app.DATA.set('targets', targets)
+
+    // Paint the edges with different colors, display.
+    var empty = ee.Image().byte();
+    var boxOutlines = empty.paint({
+      featureCollection: boxes,
+      color: "#993404",
+      width: 2
+    });
+    Map.addLayer(gcps, {color: 'black'}, 'sample points')
+    Map.addLayer(boxOutlines, {palette: "#f0f0f0"}, 'target')
+  };
+
+  // Function to zoom to selected point
+  app.zoomToPoint = function() {
+    var pointId = app.pointPicker.select.getValue();
+    if (pointId && app.DATA.get('gcps')){
+      // if an point id is found, zoom to point
+      var gcps = app.DATA.get('gcps');
+      var point = gcps.filterMetadata('id', 'equals', pointId).first();
+      Map.centerObject(point, 14);
+    } else {
+      print("Load a flood event first")
+    }
+  };
+
+  // Function to export data
+  app.exportPoints = function() {
+
+    // Prep the collection to be exported
+    var targets = app.DATA.get('targets')
+    var valPoints = dry.merge(water.merge(na))
+
+    // Define a spatial filter as geometries that intersect.
+    var spatialFilter = ee.Filter.intersects({
+      leftField: '.geo',
+      rightField: '.geo',
+      maxError: 1
+    });
+
+    // Define a save all join.
+    var saveAllJoin = ee.Join.saveAll({
+      matchesKey: 'validation'
+    });
+
+    // Apply the join.
+    var intersect = saveAllJoin.apply(targets, valPoints, spatialFilter)
+
+    // Determine if all points were sampled
+    var sizeDry = dry.size()
+    var sizeWater = water.size()
+    var sizeNA = na.size()
+    var n = sizeDry.add(sizeWater).add(sizeNA)
+
+    if (n.getInfo() >= 250) {
+
+      // Prep variables for file name
+      var dateProp = misc.todaysDate('/')
+      var dateFile = misc.todaysDate('_')
+      var timeFile = misc.time(':')
+      var dfoID = app.floodFilter.dfoID.getValue()
+      var analyst = app.analyst.initials.getValue()
+      var fileName = "DFO_" + dfoID + "_" + analyst + "_" + dateFile + "_" + timeFile
+
+      // Prep export table
+      var validation = intersect.map(function(p){
+        // Get class data from validation point
+        var valPoint = ee.Feature(ee.List(p.get('validation')).get(0))
+        var valClass = valPoint.get('class')
+
+        //Get X,Y data from point
+        var coords = valPoint.geometry().coordinates()
+        var x = coords.get(0)
+        var y = coords.get(1)
+        return p.setMulti({'dfoID':dfoID, 'analyst':analyst, 'date':dateProp,
+                            'validation': valClass, 'lat':y, 'lon':x})
+      });
+      print(validation)
+
+
+      // Export the image to Drive.
+      Export.table.toCloudStorage({
+        collection: validation,
+        description: 'Validation_Export_DFO_' + dfoID,
+        bucket: 'gfd_accuracy',
+        fileNamePrefix: fileName,
+        fileFormat: 'CSV'
+      });
+    }
+    else {
+      var validatedList = ee.List(intersect.reduceColumns(ee.Reducer.toList(), ['id'])
+                                    .get('list'))
+                                    .map(function(n){
+                                      return ee.Number.parse(n);
+                                    });
+      var missing = ee.List.sequence(0,250,1).removeAll(validatedList);
+      missing.evaluate(function(m){
+        var l = ee.List(m)
+        var s = ee.String(l.length());
+        app.export.error.setValue('ERROR: Cannot export. Missing '+s.getInfo()+' points: '+ l.getInfo())
+      })
+    }
+  };
+};
+
+/** Creates the app constants. */
+app.createConstants = function() {
+    app.GFD = ee.ImageCollection("projects/global-flood-db/3day_std_qc")
+    app.DFO_DB = ee.FeatureCollection("ft:1HBs5-y8tXhYMQd5rtdjCqejpJW2p0FLBEamM9vaW")
+    app.MOD44W = ee.ImageCollection('MODIS/006/MOD44W')
+    app.SECTION_STYLE = {margin: '20px 0 0 0'};
+    app.HELPER_TEXT_STYLE = {
+      margin: '8px 0 -3px 8px',
+      fontSize: '12px',
+      color: 'gray'
+    };
+    app.ERROR_TEXT_STYLE = {
+      margin: '5px 0 20px 0',
+      fontSize: '14px',
+      color: 'red'
+    }
+    app.VIS_OPTIONS = {
+      natural: {bands: ['B3', 'B2', 'B1'], min:100, max:3500},
+      nir: {bands: ['B4', 'B3', 'B2'], min:100, max:3500},
+      ndvi: {min: 0.1, max: 0.2, palette: ['#a50026','#d73027','#f46d43',
+                                          '#fdae61','#fee090','#ffffbf',
+                                          '#e0f3f8','#abd9e9','#74add1',
+                                          '#4575b4','#313695'], bands: ['NDVI']},
+      mndwi: {min: -0.5, max: -0.2, palette: ['#a50026','#d73027','#f46d43',
+                                              '#fdae61','#fee08b','#ffffbf',
+                                              '#d9ef8b','#a6d96a','#66bd63',
+                                              '#1a9850','#006837'], bands: ['MNDWI']}
+
+    };
+};
+
+/** Create a live dictionary to store important results. */
+app.liveData = function() {
+  app.DATA = ui.data.ActiveDictionary();
+};
+
+/** Creates the application interface. */
+app.boot = function() {
+  app.liveData();
+  app.createConstants();
+  app.createHelpers();
+  app.createPanels();
+  var main = ui.Panel({
+    widgets: [
+      app.intro.panel,
+      app.analyst.panel,
+      app.floodFilter.panel,
+      app.pointPicker.panel,
+      app.export.panel
+    ],
+    style: {width: '320px', padding: '8px'}
+  });
+  ui.root.insert(0, main);
+};
+
+app.boot();

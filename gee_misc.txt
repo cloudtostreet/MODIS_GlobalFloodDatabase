@@ -1,0 +1,77 @@
+// Function to get todays date in the form for an export
+exports.todaysDate = function(sep){
+  var today = new Date()
+  var dd = today.getDate()
+  var mm = today.getMonth()+1; //January is 0!
+  var yyyy = today.getFullYear()
+
+  if(dd<10) {
+      dd = '0'+dd;
+  }
+
+  if(mm<10) {
+      mm = '0'+mm;
+  }
+
+  today = mm + sep + dd + sep + yyyy;
+  return today
+}
+
+// Function to get current time in the form for an export
+exports.time = function(sep){
+  var today = new Date()
+  var hh = today.getHours()
+  var mm = today.getMinutes()
+
+  if(hh<10) {
+    dd = '0'+dd}
+
+  if(mm<10) {
+    mm = '0'+mm}
+
+  return hh + sep + mm
+}
+
+// Series of functions to get overlapping watersheds of a geometry
+exports.get_watersheds_level5 = function (dfoFeature) {
+  var basins = ee.FeatureCollection('ft:1IHRHUiWkgPXOzwNweeM89CzPYSfokjLlz7_0OTQl')
+  return basins.filterBounds(dfoFeature)
+}
+
+exports.get_watersheds_level4 = function (dfoFeature) {
+  var basins = ee.FeatureCollection('ft:1JRW4YKfVTZKLAH4x4JRsggsHZoXRRUQKTIOYgJOW')
+  return basins.filterBounds(dfoFeature)
+}
+
+exports.get_watersheds_level3 = function (dfoFeature) {
+  var basins = ee.FeatureCollection('ft:1asIZ7d9NqNIubAp2dNMvnAfRMd-9ih7kjcLnIzv6')
+  return basins.filterBounds(dfoFeature)
+}
+
+// Functions to get geographic areas that are not represented in the HydroSheds
+// dataset but present in DFO database.
+exports.get_islands = function(dfo_feature) {
+    var islands = ee.FeatureCollection('ft:14BijFeJ0MiV1CeP7FBst8P4Kf1Se0HK5Sfh78hJB')
+    return islands.filterBounds(dfo_feature)
+}
+
+exports.get_american_somoa = function(dfo_feature) {
+    var asm = ee.FeatureCollection('ft:1C79v82bd1QfIsdGfDFOo2sz2XIHJCiVnXWXBeX0_')
+    return asm.filterBounds(dfo_feature)
+}
+
+
+// Create a list of days of year (1 day steps)
+exports.getDateList = function(year_start, year_end, step){
+  var doy = ee.List.sequence(1, 365, step)
+  var years = ee.List.sequence(year_start, year_end)
+
+  // Convert the years and doys to a list of dates to map over
+  var dates = years.map(function(y) {
+    return doy.map(function(d) {
+      var date = ee.String(y).slice(0, 4).cat('-').cat(ee.String(d).slice(0, -2))
+      return ee.Date.parse('y-D', date)
+    })
+  }).flatten()
+  return dates
+}

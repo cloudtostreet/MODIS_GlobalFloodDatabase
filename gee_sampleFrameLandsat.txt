@@ -1,0 +1,101 @@
+// QC Database
+var gfd_qc = ee.ImageCollection("projects/global-flood-db/3day_std_qc");
+
+// Functions used to collect a mosaic of all Landsat images over a specified area
+// and within a certain number of days from the maximum flood extent image.
+var getLandsat = function(id, gfd, cloudCover, deltaDays){
+
+  // Prep the Landsat data by filtering flood dates
+  // LANDSAT 8 - Filter Landsat 8 OLI Products by Flood Events Boundaries and Dates
+  function filterFloodEventsL8 (roi, filterDate){
+    var imageCollection = ee.ImageCollection("LANDSAT/LC08/C01/T1_SR").filterBounds(roi)
+                          .filterDate(filterDate, filterDate.advance(deltaDays, "day"))
+                          .filterMetadata("CLOUD_COVER", "less_than", cloudCover)
+    return imageCollection
+  }
+
+  // LANDSAT 7 - Filter Landsat 7 ETM Products by Flood Events Boundaries and Dates
+  function filterFloodEventsL7 (roi, filterDate){
+    var imageCollection = ee.ImageCollection("LANDSAT/LE07/C01/T1_SR").filterBounds(roi)
+                        .filterDate(filterDate, filterDate.advance(deltaDays, "day"))
+                        .filterMetadata("CLOUD_COVER", "less_than", cloudCover)
+    return imageCollection
+  }
+
+  // LANDSAT 5 - Filter Landsat 5 TM Products by Flood Events Boundaries and Dates
+  function filterFloodEventsL5 (roi, filterDate){
+    var imageCollection = ee.ImageCollection("LANDSAT/LT05/C01/T1_SR").filterBounds(roi)
+                        .filterDate(filterDate, filterDate.advance(deltaDays, "day"))
+                        .filterMetadata("CLOUD_COVER", "less_than", cloudCover)
+    return imageCollection
+  }
+
+  //  Load in DFO Fusion Table and filter for the floods bounds
+  var dfoEvents = ee.FeatureCollection("projects/global-flood-db/dfo-polygons/dec-03-2019");
+  var dfoGeom = dfoEvents.filterMetadata('ID', 'equals', id).first().geometry()
+
+  // Load in JRC product and prep waterMask
+  var jrc = ee.Image("JRC/GSW1_0/GlobalSurfaceWater").clip(dfoGeom)
+  var waterMask = jrc.select('transition').eq(1).unmask().neq(1)
+
+  // Prep flood img
+  var img = ee.Image(gfd.filterMetadata("Index", "equals", id).first()).select("flooded").clip(dfoGeom)
+  var imgMasked = img.updateMask(waterMask)
+  var ft = imgMasked.updateMask(img).reduceToVectors({geometry:dfoGeom,scale:10000,maxPixels:10e13})
+                      .map(function(f){return f.simplify(10000)})
+
+  // Variables for filter landsat series of functions
+  var maxDate = ee.Date(img.get('maxImgDate'))
+
+  // Filter for Landsat 8 images
+  var l8 = ee.ImageCollection(filterFloodEventsL8(ft, maxDate).select(["B1", "B2", "B3", "B4", "B5", "B7", "pixel_qa"]));
+
+  // Filter for Landsat 7 Images
+  var l7 = filterFloodEventsL7(ft, maxDate).select(["B1", "B2", "B3", "B4", "B5", "B7", "pixel_qa"]);
+
+  // Filter for Landsat 5 images
+  var l5 = filterFloodEventsL5(ft, maxDate).select(["B1", "B2", "B3", "B4", "B5", "B7", "pixel_qa"]);
+
+  return ee.ImageCollection(l8).merge(l7).merge(l5);
+};
+
+
+// Dials for the landsat collection.  cc= cloud cover; delta = number of days after max extent
+// to collect landsat
+var cc =20
+var delta =1
+
+function getSampleFrame(img){
+
+  // Retrieve Landsat Images
+  var id = img.get('Index')
+  var landsat = getLandsat(id, gfd_qc, cc, delta);
+
+  // Get sizes of land
+  var l_size = landsat.size()
+  var l5_size = landsat.filterMetadata('SATELLITE', 'equals', 'LANDSAT_5').size()
+  var l7_size = landsat.filterMetadata('SATELLITE', 'equals', 'LANDSAT_7').size()
+  var l8_size = landsat.filterMetadata('SATELLITE', 'equals', 'LANDSAT_8').size()
+
+  // Get centroid of flood
+  var center = img.geometry().centroid()
+  var centerCoords = center.coordinates()
+  var x = centerCoords.get(0)
+  var y = centerCoords.get(1)
+
+  // Put it all in a dictionary
+  var lndst_dict = {'DFO_ID': id, 'CLOUD_COVER':cc, 'DELTA':delta, 'LANDSAT_5':l5_size,
+                  'LANDSAT_7':l7_size, 'LANDSAT_8':l8_size, 'LANDSAT_ALL':l_size,
+                  'X':x, 'Y':y
+  }
+  return ee.Feature(null, lndst_dict)
+}
+
+var sampleFrame = ee.FeatureCollection(gfd_qc.map(getSampleFrame))
+
+Export.table.toDrive({
+  collection: sampleFrame,
+  description: 'sampleFrame_CC'+cc+'_D'+delta,
+  fileNamePrefix: 'sampleFrame_CC'+cc+'_D'+delta+'_051618',
+  fileFormat: 'CSV'
+})
