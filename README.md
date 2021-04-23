@@ -1,6 +1,6 @@
 ## Global Flood Database Scripts & Data
 
-This repository includes code and supporting data for the Global Flood Database. Below are descriptions of the data and code and how they relate to *Tellman et al, Satellite observations indicate increasing proportion of population exposed to floods*
+This repository includes code and supporting data for the Global Flood Database. Below are descriptions of the data and code and how they relate to *Tellman et al, Satellites observe indicate increasing proportion of population exposed to floods*
 
 ### Data
 #### Flood Maps
