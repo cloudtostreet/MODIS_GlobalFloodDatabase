@@ -29,10 +29,11 @@ You can also download the entire database as GeoTIFF files directly from Google 
 9. `data\aqueductcountrydata.csv`: WRI Aqueduct flood exposure estimates for various return periods for 2010 and 2030
 10. `data\aqueduct_dictionary.xlsx`: data dictionary to explain columns in WRI Aqueduct flood exposure estimates
 11. `data\gfd_popsummary.csv`: Global Flood Database population exposure estimates per country, in 2000 and 2015, and associated statistics.
-12. `data\GFDabove_13_wBias.csv`: Global Flood Database population exposure estimates per country, in 2000 and 2015, with bias correction factor based on comparison to HRSL data.
-12. `data\gfd_popdictionary.xlsx`: data dictionary to explain columns in Global Flood Database exposure estimates
-13. **Population Exposed Per Event**: Population exposure estimate per event. To access click on the `INFO` button on our data portal at: http://global-flood-database.cloudtostreet.info/
-14. **Population Exposed Per Country Per Event**: Population exposure estimates per country by event. To access click on the `INFO` button on our data portal at: http://global-flood-database.cloudtostreet.info/
+12. `data\GFDabove_13_wBias.csv`: Global Flood Database population exposure estimates per country, in 2000 and 2015, with bias correction factor based on comparison to HRSL data. Note Montenegro and Serbia are treated as one country here (Yugoslavia), and Sudan/South Sudan are treated as one country (Sudan) as these country splits occured during the 2000-2015 period of analysis.
+13. `data\popchange_Aque_GFD.csv`: selected 122 countries (represented in the Global Flood Database) of the 2030 estimates for flood exposure from WRI estimates used to report the absolute population for 2030 flood exposure, with population and climate components specifically. Note Montenegro and Serbia are reported seperately (instead of as Yugoslavia), and Sudan and South Sudan are reported seperately (instead of as Sudan).
+14. `data\gfd_popdictionary.xlsx`: data dictionary to explain columns in Global Flood Database exposure estimates
+15. **Population Exposed Per Event**: Population exposure estimate per event. To access click on the `INFO` button on our data portal at: http://global-flood-database.cloudtostreet.info/
+16. **Population Exposed Per Country Per Event**: Population exposure estimates per country by event. To access click on the `INFO` button on our data portal at: http://global-flood-database.cloudtostreet.info/
 
 #### Pop Sensitivity & Uncertainty
 15. `data\gfd_popsensitivity.csv`: Global Flood database population exposure estimates per country using the Global Human Settlement Layer (GHSL), High Resolution Settlement Layer (HRSL) and GridPop3. Countries are limited to those with HRSL data.
