@@ -9,7 +9,7 @@ The flood maps (.tif files) can be accessed through a visualization and data por
 
 You can also download the entire database as GeoTIFF files directly from Google Cloud Storage (GCS) using the [gsutil](https://cloud.google.com/storage/docs/gsutil_install) [cp command](https://cloud.google.com/storage/docs/gsutil/commands/cp) from the GCS bucket "gfd_v1_4". You can use the following command to download the entire database to a local directory:
 
-`gsutil -m cp gs://gfd_v1_4 your/local/directory/to/save/to`
+`gsutil -m cp -r gs://gfd_v1_4 your/local/directory/to/save/to`
 
 
 #### Flood Mapping
